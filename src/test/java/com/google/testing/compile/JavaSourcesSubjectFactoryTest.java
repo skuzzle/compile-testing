@@ -97,6 +97,16 @@ public class JavaSourcesSubjectFactoryTest {
         .compilesWithoutError()
         .withWarningContaining("redundant cast to java.lang.String");
   }
+  
+  @Test
+  public void compilesWithoutError_noWarning() {
+    final JavaFileObject file = JavaFileObjects.forResource(Resources.getResource(
+        "HelloWorld.java"));
+    ASSERT.about(javaSource())
+      .that(file)
+      .compilesWithoutError()
+      .andNoWarnings();
+  }
 
   @Test
   public void compilesWithoutError_throws() {

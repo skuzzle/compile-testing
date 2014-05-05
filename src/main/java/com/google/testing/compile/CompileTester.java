@@ -88,6 +88,9 @@ public interface CompileTester {
        *      by last compilation. 
        */
       FileClause<SuccessfulCompilationClause> withWarningContaining(String messageFragment);
+
+      /** Asserts that the compilation yielded no warnings. */
+      SuccessfulCompilationClause andNoWarnings();
   }
 
   /** The clause in the fluent API for further tests on unsuccessful compilations. */
