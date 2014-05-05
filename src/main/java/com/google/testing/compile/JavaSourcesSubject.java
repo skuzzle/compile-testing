@@ -17,6 +17,19 @@ package com.google.testing.compile;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Map;
+
+import javax.annotation.processing.Processor;
+import javax.tools.Diagnostic;
+import javax.tools.Diagnostic.Kind;
+import javax.tools.FileObject;
+import javax.tools.JavaFileObject;
+
+import org.truth0.FailureStrategy;
+import org.truth0.subjects.Subject;
+
 import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Optional;
@@ -30,21 +43,7 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.io.ByteStreams;
 import com.google.testing.compile.Compilation.Result;
-
 import com.sun.source.tree.CompilationUnitTree;
-
-import org.truth0.FailureStrategy;
-import org.truth0.subjects.Subject;
-
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Map;
-
-import javax.annotation.processing.Processor;
-import javax.tools.Diagnostic;
-import javax.tools.Diagnostic.Kind;
-import javax.tools.FileObject;
-import javax.tools.JavaFileObject;
 
 /**
  * A <a href="https://github.com/truth0/truth">Truth</a> {@link Subject} that evaluates the result
@@ -122,19 +121,39 @@ public final class JavaSourcesSubject
   private CompilationClause newCompilationClause(Iterable<? extends Processor> processors) {
     return new CompilationClause(processors);
   }
-
-  private final class UnsuccessfulCompilationBuilder implements UnsuccessfulCompilationClause {
-    private final Compilation.Result result;
-
-    UnsuccessfulCompilationBuilder(Compilation.Result result) {
-      checkArgument(!result.successful());
+  
+  
+  /**
+   * Base class for compilation result builders. It contains helper methods for filtering
+   * the diagnostics of a {@link Result compilation result}.
+   * @author Simon Taddiken
+   */
+  private abstract class AbstractBuilder {
+    protected final Compilation.Result result;
+    
+    public AbstractBuilder(Compilation.Result result) {
       this.result = result;
     }
-
-    @Override
-    public FileClause withErrorContaining(final String messageFragment) {
+    
+    /**
+     * Filters the diagnostics of the current compilation result by 
+     * {@link Diagnostic.Kind kind} and message. If there is not at least one diagnostic
+     * within the compilation result of specified kind, containing the specified 
+     * messageFragment, this method fails with current {@link FailureStrategy}.
+     * 
+     * @param kind The kind of the diagnostic to include in the result.
+     * @param messageFragment The message fragment which must be included by the 
+     *      pre-filtered diagnostic's messages.
+     * @param errorTemplate Template string to produce the error message when failing. It
+     *      is expected to have two '%s' parameters. The first one will be replaced with
+     *      the expected message fragment, the second one will be replace with the 
+     *      diagnostic messages found instead.
+     * @return A {@link FluentIterable} for iterating the filtered diagnostics.
+     */
+    protected FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsWithMessage(
+        Kind kind, final String messageFragment, final String errorTemplate) {
       FluentIterable<Diagnostic<? extends JavaFileObject>> diagnostics =
-          FluentIterable.from(result.diagnosticsByKind().get(Kind.ERROR));
+          FluentIterable.from(result.diagnosticsByKind().get(kind));
       final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsWithMessage =
           diagnostics.filter(new Predicate<Diagnostic<?>>() {
             @Override
@@ -143,8 +162,7 @@ public final class JavaSourcesSubject
             }
           });
       if (diagnosticsWithMessage.isEmpty()) {
-        failureStrategy.fail(String.format(
-            "Expected an error containing \"%s\", but only found %s", messageFragment,
+        failureStrategy.fail(String.format(errorTemplate, messageFragment,
             diagnostics.transform(
               new Function<Diagnostic<?>, String>() {
                 @Override public String apply(Diagnostic<?> input) {
@@ -152,55 +170,155 @@ public final class JavaSourcesSubject
                 }
               })));
       }
-      return new FileClause() {
+      return diagnosticsWithMessage;
+    }
+    
+    /**
+     * Filters the provided {@link FluentIterable} by diagnostics which occur on a certain
+     * column. If there is not at least one diagnostic within the provided iterable, 
+     * occurring at the expected column, this method fails with current 
+     * {@link FailureStrategy}.
+     * 
+     * @param diagnosticsOnLine Pre-filtered FluentIterable containing only diagnostics 
+     *      from a certain line.
+     * @param file The file in which a certain diagnostic is expected. Only used for 
+     *      creating a meaningful failure message.
+     * @param lineNumber The line number on which a certain diagnostic is expected. Only 
+     *      used for creating a meaningful failure message.
+     * @param columnNumber The column number in which a certain diagnostic is expected.
+     * @return A {@link FluentIterable} for iterating the filtered diagnostics.
+     */
+    protected FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsAtColumn(
+          FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsOnLine,
+          JavaFileObject file, final long lineNumber, final long columnNumber)
+        {
+      FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsAtColumn =
+          diagnosticsOnLine.filter(new Predicate<Diagnostic<?>>() {
+            @Override
+            public boolean apply(Diagnostic<?> input) {
+              return columnNumber == input.getColumnNumber();
+            }
+          });
+      if (diagnosticsAtColumn.isEmpty()) {
+        failureStrategy.fail(String.format(
+            "Expected an error at %d:%d of %s, but only found errors at column(s) %s",
+            lineNumber, columnNumber, file.getName(), diagnosticsOnLine.transform(
+                new Function<Diagnostic<?>, Long>() {
+                  @Override public Long apply(Diagnostic<?> input) {
+                    return input.getColumnNumber();
+                  }
+                })));
+      }
+      return diagnosticsAtColumn;
+    }
+    
+    /**
+     * Filters the provided {@link FluentIterable} by diagnostics which occur on a certain
+     * line. If there is not at least one diagnostic within the provided iterable, 
+     * occurring in the expected line, this method fails with current 
+     * {@link FailureStrategy}.
+     * 
+     * @param diagnosticsWithMessage Pre-filtered diagnostics which contain a
+     *      certain message fragment.
+     * @param diagnosticsInFile Those diagnostics of <tt>diagnosticsWithMessage</tt> which
+     *      occurred within an expected file.
+     * @param file The file in which a certain diagnostic is expected. Only used for 
+     *      creating a meaningful failure message.
+     * @param lineNumber The line number on which a certain diagnostic is expected.
+     * @return A {@link FluentIterable} for iterating the filtered diagnostics.
+     */
+    protected FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsOnLine(
+        FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsWithMessage,
+        FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsInFile,
+        final JavaFileObject file, final long lineNumber) {
+      
+      final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsOnLine =
+          diagnosticsWithMessage.filter(new Predicate<Diagnostic<?>>() {
+            @Override
+            public boolean apply(Diagnostic<?> input) {
+              return lineNumber == input.getLineNumber();
+            }
+          });
+      if (diagnosticsOnLine.isEmpty()) {
+        failureStrategy.fail(String.format(
+            "Expected an error on line %d of %s, but only found errors on line(s) %s",
+            lineNumber, file.getName(), diagnosticsInFile.transform(
+                new Function<Diagnostic<?>, Long>() {
+                  @Override public Long apply(Diagnostic<?> input) {
+                    return input.getLineNumber();
+                  }
+                })));
+      }
+      return diagnosticsOnLine;
+    }
+  }
+  
+  /**
+   * Filters the provided {@link FluentIterable} by diagnostics which occur in a certain
+   * file. If there is not at least one diagnostic occurring in the expected file, 
+   * this method fails with current {@link FailureStrategy}.
+   * @param it Diagnostics to filter by file.
+   * @param file The file to filter by.
+   * @return A {@link FluentIterable} for iterating the filtered diagnostics.
+   */
+  protected FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsInFile(
+      FluentIterable<Diagnostic<? extends JavaFileObject>> it, final JavaFileObject file) {
+    final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsInFile = 
+        it.filter(new Predicate<Diagnostic<? extends JavaFileObject>>() {
+          @Override public boolean apply(Diagnostic<? extends JavaFileObject> input) {
+            return file.toUri().getPath().equals(input.getSource().toUri().getPath());
+          }
+        });
+    if (diagnosticsInFile.isEmpty()) {
+      failureStrategy.fail(String.format(
+          "Expected an error in %s, but only found errors in %s", file.getName(),
+          it.transform(
+              new Function<Diagnostic<? extends FileObject>, String>() {
+                @Override public String apply(Diagnostic<? extends FileObject> input) {
+                  return input.getSource().getName();
+                }
+              })));
+    }
+    return diagnosticsInFile;
+  }
+  
+  
+
+  private final class UnsuccessfulCompilationBuilder extends AbstractBuilder implements 
+      UnsuccessfulCompilationClause {
+
+    UnsuccessfulCompilationBuilder(Compilation.Result result) {
+      super(result);
+      checkArgument(!result.successful());
+    }
+
+    @Override
+    public FileClause<UnsuccessfulCompilationClause> withErrorContaining(final String messageFragment) {
+      final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsWithMessage =
+          diagnosticsWithMessage(Kind.ERROR, messageFragment, 
+              "Expected an error containing \"%s\", but only found %s");
+      
+      return new FileClause<UnsuccessfulCompilationClause>() {
         @Override
         public UnsuccessfulCompilationClause and() {
           return UnsuccessfulCompilationBuilder.this;
         }
 
         @Override
-        public LineClause in(final JavaFileObject file) {
+        public LineClause<UnsuccessfulCompilationClause> in(final JavaFileObject file) {
           final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsInFile =
-              diagnosticsWithMessage.filter(new Predicate<Diagnostic<? extends FileObject>>() {
-                @Override
-                public boolean apply(Diagnostic<? extends FileObject> input) {
-                  return file.toUri().getPath().equals(input.getSource().toUri().getPath());
-                }
-              });
-          if (diagnosticsInFile.isEmpty()) {
-            failureStrategy.fail(String.format(
-                "Expected an error in %s, but only found errors in %s", file.getName(),
-                diagnosticsWithMessage.transform(
-                    new Function<Diagnostic<? extends FileObject>, String>() {
-                      @Override public String apply(Diagnostic<? extends FileObject> input) {
-                        return input.getSource().getName();
-                      }
-                    })));
-          }
-          return new LineClause() {
+              diagnosticsInFile(diagnosticsWithMessage, file);
+          return new LineClause<UnsuccessfulCompilationClause>() {
             @Override public UnsuccessfulCompilationClause and() {
               return UnsuccessfulCompilationBuilder.this;
             }
 
-            @Override public ColumnClause onLine(final long lineNumber) {
+            @Override public ColumnClause<UnsuccessfulCompilationClause> onLine(final long lineNumber) {
               final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsOnLine =
-                  diagnosticsWithMessage.filter(new Predicate<Diagnostic<?>>() {
-                    @Override
-                    public boolean apply(Diagnostic<?> input) {
-                      return lineNumber == input.getLineNumber();
-                    }
-                  });
-              if (diagnosticsOnLine.isEmpty()) {
-                failureStrategy.fail(String.format(
-                    "Expected an error on line %d of %s, but only found errors on line(s) %s",
-                    lineNumber, file.getName(), diagnosticsInFile.transform(
-                        new Function<Diagnostic<?>, Long>() {
-                          @Override public Long apply(Diagnostic<?> input) {
-                            return input.getLineNumber();
-                          }
-                        })));
-              }
-              return new ColumnClause() {
+                  diagnosticsOnLine(diagnosticsWithMessage, diagnosticsInFile, file, 
+                      lineNumber);
+
+              return new ColumnClause<UnsuccessfulCompilationClause>() {
                 @Override
                 public UnsuccessfulCompilationClause and() {
                   return UnsuccessfulCompilationBuilder.this;
@@ -209,23 +327,7 @@ public final class JavaSourcesSubject
                 @Override
                 public ChainingClause<UnsuccessfulCompilationClause> atColumn(
                     final long columnNumber) {
-                  FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsAtColumn =
-                      diagnosticsOnLine.filter(new Predicate<Diagnostic<?>>() {
-                        @Override
-                        public boolean apply(Diagnostic<?> input) {
-                          return columnNumber == input.getColumnNumber();
-                        }
-                      });
-                  if (diagnosticsAtColumn.isEmpty()) {
-                    failureStrategy.fail(String.format(
-                        "Expected an error at %d:%d of %s, but only found errors at column(s) %s",
-                        lineNumber, columnNumber, file.getName(), diagnosticsOnLine.transform(
-                            new Function<Diagnostic<?>, Long>() {
-                              @Override public Long apply(Diagnostic<?> input) {
-                                return input.getColumnNumber();
-                              }
-                            })));
-                  }
+                  diagnosticsAtColumn(diagnosticsOnLine, file, lineNumber, columnNumber);
                   return new ChainingClause<UnsuccessfulCompilationClause>() {
                     @Override public UnsuccessfulCompilationClause and() {
                       return UnsuccessfulCompilationBuilder.this;
@@ -240,13 +342,13 @@ public final class JavaSourcesSubject
     }
   }
 
-  private final class SuccessfulCompilationBuilder implements SuccessfulCompilationClause,
+  private final class SuccessfulCompilationBuilder extends AbstractBuilder 
+        implements SuccessfulCompilationClause,
       GeneratedPredicateClause {
-    private final Compilation.Result result;
 
     SuccessfulCompilationBuilder(Compilation.Result result) {
+      super(result);
       checkArgument(result.successful());
-      this.result = result;
     }
 
     @Override
@@ -254,6 +356,56 @@ public final class JavaSourcesSubject
       return this;
     }
 
+    @Override
+    public FileClause<SuccessfulCompilationClause> withWarningContaining(
+            final String messageFragment) {
+      final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsWithMessage =
+          diagnosticsWithMessage(Kind.WARNING, messageFragment, 
+              "Expected a warning containing \"%s\" but only found %s");
+      
+      return new FileClause<SuccessfulCompilationClause>() {
+        @Override
+        public SuccessfulCompilationClause and() {
+          return SuccessfulCompilationBuilder.this;
+        }
+
+        @Override
+        public LineClause<SuccessfulCompilationClause> in(final JavaFileObject file) {
+          final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsInFile =
+              diagnosticsInFile(diagnosticsWithMessage, file);
+          return new LineClause<SuccessfulCompilationClause>() {
+            @Override public SuccessfulCompilationClause and() {
+              return SuccessfulCompilationBuilder.this;
+            }
+
+            @Override public ColumnClause<SuccessfulCompilationClause> onLine(final long lineNumber) {
+              final FluentIterable<Diagnostic<? extends JavaFileObject>> diagnosticsOnLine =
+                  diagnosticsOnLine(diagnosticsWithMessage, diagnosticsInFile, file, 
+                      lineNumber);
+
+              return new ColumnClause<SuccessfulCompilationClause>() {
+                @Override
+                public SuccessfulCompilationClause and() {
+                  return SuccessfulCompilationBuilder.this;
+                }
+
+                @Override
+                public ChainingClause<SuccessfulCompilationClause> atColumn(
+                    final long columnNumber) {
+                  diagnosticsAtColumn(diagnosticsOnLine, file, lineNumber, columnNumber);
+                  return new ChainingClause<SuccessfulCompilationClause>() {
+                    @Override public SuccessfulCompilationClause and() {
+                      return SuccessfulCompilationBuilder.this;
+                    }
+                  };
+                }
+              };
+            }
+          };
+        }
+      };
+    }
+    
     @Override
     public SuccessfulCompilationClause generatesSources(JavaFileObject first,
         JavaFileObject... rest) {

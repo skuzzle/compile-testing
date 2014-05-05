@@ -65,7 +65,7 @@ final class Compilation {
         null, // explicitly use the default because old versions of javac log some output on stderr
         fileManager,
         diagnosticCollector,
-        ImmutableSet.<String>of(),
+        ImmutableSet.of("-Xlint:all"), // enable all warnings
         ImmutableSet.<String>of(),
         sources);
     task.setProcessors(processors);

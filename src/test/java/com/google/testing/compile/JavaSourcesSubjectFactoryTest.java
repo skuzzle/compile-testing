@@ -74,6 +74,29 @@ public class JavaSourcesSubjectFactoryTest {
             "}"))
         .compilesWithoutError();
   }
+  
+  @Test
+  public void compilesWithoutError_withWarning() {
+    final JavaFileObject file = JavaFileObjects.forResource(Resources.getResource(
+        "HelloWorldWarning.java"));
+    ASSERT.about(javaSource())
+      .that(file)
+      .compilesWithoutError()
+      .withWarningContaining("redundant cast to java.lang.String")
+      .in(file).onLine(20).atColumn(16);
+    
+    ASSERT.about(javaSource())
+    .that(JavaFileObjects.forSourceLines("test.HelloWorld",
+        "package test;",
+        "",
+        "public class HelloWorld {",
+        "  public static void main(String[] args) {",
+        "    String s = (String)\"Hello world\";",
+        "  }",
+        "}"))
+        .compilesWithoutError()
+        .withWarningContaining("redundant cast to java.lang.String");
+  }
 
   @Test
   public void compilesWithoutError_throws() {

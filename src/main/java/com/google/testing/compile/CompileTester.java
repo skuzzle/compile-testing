@@ -42,24 +42,24 @@ public interface CompileTester {
    * The clause in the fluent API that checks that an error is associated with a particular
    * {@link JavaFileObject}.
    */
-  public interface FileClause extends ChainingClause<UnsuccessfulCompilationClause> {
-    LineClause in(JavaFileObject file);
+  public interface FileClause<T> extends ChainingClause<T> {
+    LineClause<T> in(JavaFileObject file);
   }
 
   /**
    * The clause in the fluent API that checks that an error is on a particular
    * {@linkplain Diagnostic#getLineNumber() line}.
    */
-  public interface LineClause extends ChainingClause<UnsuccessfulCompilationClause> {
-    ColumnClause onLine(long lineNumber);
+  public interface LineClause<T> extends ChainingClause<T> {
+    ColumnClause<T> onLine(long lineNumber);
   }
 
   /**
    * The clause in the fluent API that checks that an error starts at a particular
    * {@linkplain Diagnostic#getColumnNumber() column}.
    */
-  public interface ColumnClause extends ChainingClause<UnsuccessfulCompilationClause> {
-    ChainingClause<UnsuccessfulCompilationClause> atColumn(long columnNumber);
+  public interface ColumnClause<T> extends ChainingClause<T> {
+    ChainingClause<T> atColumn(long columnNumber);
   }
 
   /** The clause in the fluent API that checks that files were generated. */
@@ -76,10 +76,19 @@ public interface CompileTester {
      * {@linkplain JavaFileObject files}.
      */
     SuccessfulCompilationClause generatesFiles(JavaFileObject first, JavaFileObject... rest);
+
   }
 
   /** The clause in the fluent API for further tests on successful compilations. */
-  public interface SuccessfulCompilationClause extends ChainingClause<GeneratedPredicateClause> {}
+  public interface SuccessfulCompilationClause extends ChainingClause<GeneratedPredicateClause> {
+      
+      /**
+       * Checks whether the compilation yielded a warning containing the provided message
+       * @param messageFragment Substring expected to occur within the warning generated
+       *      by last compilation. 
+       */
+      FileClause<SuccessfulCompilationClause> withWarningContaining(String messageFragment);
+  }
 
   /** The clause in the fluent API for further tests on unsuccessful compilations. */
   public interface UnsuccessfulCompilationClause {
@@ -87,6 +96,6 @@ public interface CompileTester {
      * Checks that an error exists that contains the given fragment in the
      * {@linkplain Diagnostic#getMessage(java.util.Locale) diagnostic message}.
      */
-    FileClause withErrorContaining(String messageFragment);
+    FileClause<UnsuccessfulCompilationClause> withErrorContaining(String messageFragment);
   }
 }
